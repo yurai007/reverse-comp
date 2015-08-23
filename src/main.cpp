@@ -3,17 +3,77 @@
 #include <cassert>
 #include <cstring>
 
+template <int fixed_size>
+class fast_string
+{
+public:
+    inline void reverse(int pos, int count)
+    {
+        int last = pos + count;
+        for (int i = 0; i <= count/2; i++)
+        {
+            char temp = buffer[pos + i];
+            buffer[pos + i] = buffer[last-i];
+            buffer[last-i] = temp;
+        }
+    }
+
+    inline void reset_whole()
+    {
+        current_size = 0;
+        memset(buffer, 0, sizeof(buffer));
+    }
+
+    inline void refresh_size()
+    {
+        current_size = strlen(buffer);
+    }
+
+    template <int source_fixed_size>
+    inline void append(fast_string<source_fixed_size> &source, int source_pos, int count)
+    {
+        memcpy(&buffer[current_size], &source.buffer[source_pos], count); //strcpy?
+        current_size += count;
+    }
+
+    inline void append(char one)
+    {
+        buffer[current_size] = one;
+        current_size++;
+    }
+
+    inline void clear()
+    {
+        current_size = 0;
+    }
+
+    inline size_t size()
+    {
+        return current_size;
+    }
+
+public:
+    char buffer[fixed_size];
+    size_t current_size {0};
+};
+
 const int margin = 60;
+const int buffer_size = 1024*1024;
+const int accum_sequence_size = 16*1024;
 const int range_size = 'z'-'A'+1;
-static char line[margin + 2];
+
+fast_string<buffer_size> buffer;
+fast_string<accum_sequence_size> accum_sequence;
+fast_string<margin + 2> line;
 static char upper_complements[range_size];
 
-static inline void upper_complement_v3(char *str, int str_size)
+
+static inline void upper_complement_v3(fast_string<margin + 2> &str)
 {
-    for (size_t i = 0; i < str_size; i++)
+    for (size_t i = 0; i < str.size(); i++)
     {
-        assert('A' <= str[i] && str[i] <= 'z');
-        str[i] = upper_complements[str[i] - 'A'];
+        assert('A' <= str.buffer[i] && str.buffer[i] <= 'z');
+        str.buffer[i] = upper_complements[str.buffer[i] - 'A'];
     }
 }
 
@@ -55,32 +115,17 @@ static void init_upper_complements()
     upper_complements['n' - 'A'] =    'N';
 }
 
-static inline void reverse(char *buffer, int pos, int count)
+static void split_and_add_to_buffer_v2(fast_string<accum_sequence_size> &accum_sequence,
+                                       fast_string<buffer_size> &buffer)
 {
-    int last = pos + count;
-    for (int i = 0; i <= count/2; i++)
-    {
-        char temp = buffer[pos + i];
-        buffer[pos + i] = buffer[last-i];
-        buffer[last-i] = temp;
-    }
-}
-
-static void split_and_add_to_buffer_v2(char *accum_sequence,
-                                       int accum_sequence_size,
-                                       char *buffer,
-                                       int &buffer_size)
-{
-    int current_id = accum_sequence_size;
+    int current_id = accum_sequence.size();
     while (current_id > 0)
     {
         size_t pos = std::max(int(current_id) - margin, 0);
-        reverse(accum_sequence, pos, current_id - pos - 1);
+        accum_sequence.reverse(pos, current_id - pos - 1);
 
-        memcpy(&buffer[buffer_size], &accum_sequence[pos], current_id - pos); //strcpy?
-        buffer_size += current_id - pos;
-        buffer[buffer_size] = '\n';
-        buffer_size++;
+        buffer.append(accum_sequence, pos, current_id - pos);
+        buffer.append('\n');
 
         current_id -= margin;
     }
@@ -93,11 +138,13 @@ static void split_and_add_to_buffer_v2(char *accum_sequence,
   So main processing loop is allocation free.
   Still ~27.000 cache misses (~ 3.5 per loop)
   Lots branches (320/loop/line). But only 3 branch misses per loop.
-  75% time is spent in upper_complement_v3
+  75% time is spent in upper_complement_v3.
+  In _Z25test_case_allocation_freev only memcpy and fgets_unlocked weren't inlined.
 
-
-  hey, what about custom fast_string class?
+  TO DO: Copy-free implementation
  */
+
+
 void test_case_allocation_free()
 {
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -105,100 +152,44 @@ void test_case_allocation_free()
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(0);
 
-    static char accum_sequence[16*1024];
-    int accum_seq_size = 0;
-
-    static char buffer[1024*1024];
-    int buffer_size = 0;
-
-    int line_size = 0;
-    memset(line, 0, sizeof(line));
-
+    line.reset_whole();
     init_upper_complements();
 
-    while (fgets_unlocked(line, margin+2, stdin))
+    while (fgets_unlocked(line.buffer, margin+2, stdin))
     {
         // line contains sequence \n,0 but we ommit that immediatly after reading
-        line_size = strlen(line);
-        line_size--;
-        if (line[0] == '>')
+        line.refresh_size();
+        line.current_size--;
+
+        if (line.buffer[0] == '>')
         {
-            if (accum_seq_size != 0)
+            if (accum_sequence.size() != 0)
             {
-                split_and_add_to_buffer_v2(accum_sequence, accum_seq_size,
-                                           buffer, buffer_size);
-                accum_seq_size = 0;
+                split_and_add_to_buffer_v2(accum_sequence, buffer);
+                accum_sequence.clear();
             }
 
-            memcpy(&buffer[buffer_size], line, line_size);
-            buffer_size += line_size;
-            buffer[buffer_size] = '\n';
-            buffer_size++;
+            buffer.append(line, 0, line.size());
+            buffer.append('\n');
         }
         else
         {
-            upper_complement_v3(line, line_size);
-
-            memcpy(&accum_sequence[accum_seq_size], line, line_size);
-            accum_seq_size += line_size;
+            upper_complement_v3(line);
+            accum_sequence.append(line, 0, line.size());
         }
     }
 
-    if (accum_seq_size != 0)
+    if (accum_sequence.size() != 0)
     {
-        split_and_add_to_buffer_v2(accum_sequence, accum_seq_size,
-                                   buffer, buffer_size);
-        accum_seq_size = 0;
+        split_and_add_to_buffer_v2(accum_sequence, buffer);
+        accum_sequence.clear();
     }
 
-    std::cout << buffer;
+    std::cout << buffer.buffer;
 
     auto t2 = std::chrono::high_resolution_clock::now();
     std::chrono::milliseconds s = std::chrono::duration_cast<std::chrono::milliseconds> (t2-t1);
     std::cerr << "time: " << s.count() << " ms \n";
-}
-
-static void unit_tests()
-{
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 0);
-    }
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 1);
-    }
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 2);
-    }
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 3);
-    }
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 9);
-    }
-    {
-        char buffer[] = "0123456789";
-        reverse(buffer, 0, 9);
-    }
-
-    char accum_sequence[] = "123CGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGC456"
-    "012CCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCT789"
-    "AAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAG"
-    "GCTGAGGCAGGAGAATCGCTT";
-    int accum_sequence_size = strlen(accum_sequence);
-
-    char buffer[512];
-    int buffer_size = 0;
-
-
-    split_and_add_to_buffer_v2(accum_sequence, accum_sequence_size, buffer,
-                               buffer_size);
-    printf(":)\n");
-
 }
 
 
