@@ -10258,8 +10258,3 @@ tctgtcccagaacagctccacaagtttttttacagccgaaacccctgtgtgaatcttaat
 atccaagcgcgttatctgattagagtttacaactcagtattttatcagtacgttttgttt
 ccaacattacccggtatgacaaaatgacgccacgtgtcgaataatggtctgaccaatgta
 ggaagtgaaaagataaatat
-
-
-
-
-
