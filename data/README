@@ -1,0 +1,12 @@
+
+1. g++-2; 	1.14s;	0.87GB/s	fastest, unknown idea
+2. main		1.46s;	0.68GB/s	my multithreaded idea with memmove and 2B reversing at once	
+3. gcc-2	1.58s;			multi-threaded idea with memmove
+4. gcc-5	1.91s;			single-threaded basic idea with memmove
+
+5. plain copy   0.6s; 1.66GB/s	        raw (cache) I/O
+6. read + write 0.9s
+7. main-2       1.4s;                   main but with only 2 threads
+8. main-3       1.74s;                  single-threaded main
+
+cp to existing - only ~150MB/s - it use SSD instead page cache.

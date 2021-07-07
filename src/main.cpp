@@ -1,182 +1,178 @@
-﻿/* The Computer Language Benchmarks Game
- * https://salsa.debian.org/benchmarksgame-team/benchmarksgame/
-
-   Contributed by yurai007
-   Based on idea from Mr Ledrug implementation
-*/
-#include <cstring>
-#include <sys/stat.h>
-#include <ctime>
-#include <unistd.h>
-#include <array>
+﻿#include <iostream>
+#include <string>
 #include <vector>
-#include <thread>
-#include <cstdio>
+#include <fstream>
 
-static char *buffer;
-static std::array<char, 128> rev_complements1;
-static std::array<unsigned short, 256*256> rev_complements;
-constexpr auto margin = 60u;
 
-static void preprocess_rev_complements() {
-    auto lower = [](auto c){
-        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+/*
+Reverse group by group with reallocating unsafe_vector (max WS = 512MB).
+Still there is penalty ~0.3s because of ~512MB WS.
+
+real	0m1.072s
+
+Is it possible to get into
+
+TODO: we could use just ~333M or 402M which should speed up it.
+*/
+
+namespace {
+    using std::istream;
+    using std::ostream;
+    using std::runtime_error;
+    using std::string;
+    using std::bad_alloc;
+    using std::vector;
+
+    constexpr size_t basepairs_in_line = 60;
+    constexpr size_t line_len = basepairs_in_line + sizeof('\n');
+
+   class unsafe_vector {
+   public:
+       unsafe_vector() {
+           _buf = (char*)malloc(_capacity);
+           if (_buf == nullptr) {
+               throw bad_alloc{};
+           }
+       }
+
+       unsafe_vector(const unsafe_vector& other) = delete;
+       unsafe_vector(unsafe_vector&& other) = delete;
+       unsafe_vector& operator=(unsafe_vector& other) = delete;
+       unsafe_vector& operator=(unsafe_vector&& other) = delete;
+
+       ~unsafe_vector() noexcept {
+           free(_buf);
+       }
+
+       char* data() {
+           return _buf;
+       }
+
+       // Resizes the vector to have a size of `count`. This method is
+       // UNSAFE because any new vector entries are uninitialized.
+       void resize_UNSAFE(size_t count) {
+           std::cout << "resize_UNSAFE: " << count << std::endl;
+           size_t rem = _capacity - _size;
+           if (count > _capacity) {
+
+               grow(count);
+           }
+           _size = count;
+       }
+
+       size_t size() const {
+           return _size;
+       }
+
+   private:
+       void grow(size_t min_cap) {
+           size_t new_cap = _capacity;
+           while (new_cap < min_cap) {
+               new_cap = static_cast<size_t>(new_cap * 2.0f);
+           }
+           std::cout << "resice grow:  " << new_cap << std::endl;
+           char* new_buf = (char*)realloc(_buf, new_cap);
+           if (new_buf != nullptr) {
+               _capacity = new_cap;
+               _buf = new_buf;
+           } else {
+               // The POSIX definition of `realloc` states that a failed
+               // reallocation leaves the supplied pointer untouched, so
+               // throw here and let the class's destructor free the
+               // untouched ptr (if necessary).
+               throw bad_alloc{};
+           }
+       }
+
+       char* _buf = nullptr;
+       size_t _size = 0;
+       size_t _capacity = 1024;
+   };
+
+    struct Sequence {
+        string header;  // not incl. starting delim (>)
+        unsafe_vector seq;  // basepair lines. all lines terminated by newline
     };
-    auto upper = [](auto c){
-        return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    };
-    constexpr auto pairs1 = "ATCGGCTAUAMKRYWWSSYRKMVBHDDHBVNN\n\n";
-    for (const auto *s = pairs1; *s; s += 2) {
-        rev_complements1[upper(s[0])] = s[1];
-        rev_complements1[lower(s[0])] = s[1];
+
+    void reverse_complement(Sequence& s) {
+        char* begin = s.seq.data();
+        char* end = s.seq.data() + s.seq.size();
+
+        if (begin == end) {
+            return;
+        }
+        end--;
+        std::reverse(begin, end);
     }
-    constexpr auto pairs = "CGGCATCGGCTAUAMKRYWWSSYRKMVBHDDHBVNN\n\n";
-    const auto length = std::strlen(pairs);
-    for (auto i = 0u; i < length; i += 2u) {
-        for (auto j = 0u; j < length; j += 2u) {
-            alignas(2) std::array froms = {pairs[i], pairs[j],
-                        lower(pairs[i]), pairs[j],
-                        pairs[i], lower(pairs[j]),
-                        lower(pairs[i]), lower(pairs[j]),
 
-                        pairs[j], pairs[i],
-                        lower(pairs[j]), pairs[i],
-                        pairs[j], lower(pairs[i]),
-                        lower(pairs[j]), lower(pairs[i])};
-            alignas(2) std::array tos = {pairs[j+1], pairs[i+1]};
+    void read_up_to(istream& in, unsafe_vector& out, char delim) {
+        constexpr size_t read_size = 1<<16;
 
-            auto to = *reinterpret_cast<short*>(&tos[0]);
-            for (auto k = 0u; k < froms.size()/2u; k += 2u) {
-                auto *from = reinterpret_cast<short*>(&froms[k]);
-                rev_complements[*from] = to;
-            }
+        size_t bytes_read = 0;
+        out.resize_UNSAFE(read_size);
+        while (in) {
+            in.getline(out.data() + bytes_read, read_size, delim);
+            bytes_read += in.gcount();
 
-            std::swap(tos[0], tos[1]);
-            to = *reinterpret_cast<short*>(&tos[0]);
-            for (auto k = froms.size()/2u; k < froms.size(); k += 2u) {
-                auto *from = reinterpret_cast<short*>(&froms[k]);
-                rev_complements[*from] = to;
+            if (in.fail()) {
+                // failed because it ran out of buffer space. Expand the
+                // buffer and perform another read
+                std::cout << "res fail: " << (bytes_read + read_size) << std::endl;
+                out.resize_UNSAFE(bytes_read + read_size);
+                in.clear(in.rdstate() & ~std::ios::failbit);
+            } else if (in.eof()) {
+                // hit EOF, rather than delmiter, but an EOF can be
+                // treated almost identially to a delmiter, except that we
+                // don't remove the delimiter from the read buffer.
+                break;
+            } else {
+                // succeeded in reading *up to and including* the sequence
+                // delimiter. Remove the delmiter.
+                --bytes_read;
+                break;
             }
         }
+        std::cout << "res end: " << (bytes_read) << std::endl;
+        out.resize_UNSAFE(bytes_read);
+    }
+
+    // Read a sequence, starting *after* the first delimiter (>)
+    void read_sequence(istream& in, Sequence& out) {
+        out.header.resize(0);
+        std::getline(in, out.header);
+        read_up_to(in, out.seq, '>');
+    }
+
+    void write_sequence(ostream& out, Sequence& s) {
+        out << '>';
+        out << s.header;
+        out << '\n';
+        out.write(s.seq.data(), s.seq.size());
     }
 }
 
-#define 	TRUNC(addr, align)   (((size_t)addr) & ~(((size_t)align) - 1))
-#define 	ALIGN_DOWN(addr, align)   TRUNC(addr, align)
-#define     ALIGN_UP(addr, align)   ( ((( size_t)addr) + (align) - 1) & (~((align) - 1)) )
+namespace revcomp {
+    void reverse_complement_fasta_stream(istream& in, ostream& out) {
+        // the read function assumes that '>' has already been read
+        // (because istream::getline will read it per loop iteration:
+        // prevents needing to 'peek' a bunch).
+        if (in.get() != '>') {
+            throw runtime_error{"unexpected input: next char should be the start of a seqence header"};
+        }
 
-static void fast_reverse_complements(short *from, short *to) {
-    auto *end = to;
-    auto *begin = from;
-    to = reinterpret_cast<short*>ALIGN_DOWN(to, 2);
-    auto *to2 = to;
-    from = reinterpret_cast<short*>ALIGN_UP(from, 2);
-    auto *from2 = from;
-    while (from <= to) {
-         auto tmp = *from;
-         *from = rev_complements[*to];
-         *to =  rev_complements[tmp];
-         from++;
-         to--;
-     }
-     auto *beginc = reinterpret_cast<char*>(begin);
-     auto *endc = reinterpret_cast<char*>(end);
-     if (end != to2 && begin != from2) {
-         auto front = *beginc;
-         *beginc = rev_complements1[*(endc + 1)];
-         *(endc + 1) = rev_complements1[front];
-     } else if (begin != from2) {
-         auto front = *beginc;
-         std::memmove(beginc, beginc + 1, endc - beginc + 1);
-         *(endc + 1) = rev_complements1[front];
-     } else if (end != to2) {
-         auto last = *(endc + 1);
-         std::memmove(beginc + 1, beginc, endc - beginc + 1);
-         *beginc = rev_complements1[last];
-     }
-}
-
-static void process(char *from, char *to) {
-    while (*from++ != '\n');
-    const auto length = to - from;
-    const auto offset = margin - (length % (margin+1));
-    if (offset) {
-        for (auto m = from + margin - offset; m < to; m += (margin+1)) {
-            std::memmove(m + 1, m, offset);
-            *m = '\n';
+        Sequence s;
+        while (not in.eof()) {
+            read_sequence(in, s);
+            reverse_complement(s);
+            write_sequence(out, s);
         }
     }
-    to--;
-    fast_reverse_complements(reinterpret_cast<short*>(from),
-                             reinterpret_cast<short*>(to-1));
-}
-
-static unsigned find_proper_separator(unsigned last) {
-    auto *found = std::strchr(&buffer[last], '>');
-    return found - &buffer[0];
-}
-
-static unsigned get_buffer_capacity() {
-    struct stat fileinfo;
-    fstat(fileno(stdin), &fileinfo);
-    return fileinfo.st_size;
-}
-
-static inline uint64_t realtime_now() {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return ts.tv_sec * 1'000'000'000ULL + ts.tv_nsec;
-}
-
-static void reverse_complement_process() {
-    preprocess_rev_complements();
-    const auto buffer_size = get_buffer_capacity();
-    buffer = new char[buffer_size + 1];
-
-    auto in = fileno(stdin);
-
-    auto t0 = realtime_now();
-
-    read(in, &buffer[0], buffer_size);
-
-    auto t1 = realtime_now(); //printf("read time: %zu ms\n", (t1-t0)/1'000'000);
-
-    buffer[buffer_size] = '>';
-    const auto max_threads_number = (buffer_size > 1'000'000u)?
-                std::thread::hardware_concurrency() : 1u;
-    const auto range = buffer_size/max_threads_number;
-
-    t0 = realtime_now();
-    auto first = 0u, last = find_proper_separator(range - 1u);
-    std::vector<std::thread> threads;
-
-    for (auto i = 1u; i <= max_threads_number && first < buffer_size; i++) {
-        threads.emplace_back([first, last](){
-            //printf("%u: %u %u\n", i, first, last);
-            auto *from =  &buffer[first], *to = &buffer[last - 1u];
-            while (to >= &buffer[first]) {
-                for (from = to; *from != '>'; from--);
-                process(from, to);
-                to = from - 1;
-            }
-        });
-        first = last;
-        last = find_proper_separator(std::min((i+1u)*range - 1u, buffer_size));
-    }
-
-    for (auto&& t : threads)
-        t.join();
-
-    t1 = realtime_now(); //printf("process time: %zu ms\n", (t1-t0)/1'000'000);
-    t0 = realtime_now();
-
-    write(fileno(stdout), buffer, buffer_size);
-    t1 = realtime_now(); //printf("write time: %zu ms\n", (t1-t0)/1'000'000);
-
-    delete[] buffer;
 }
 
 int main() {
-    reverse_complement_process();
-    return 0;
+    std::cin.sync_with_stdio(false);
+    std::cout.sync_with_stdio(false);
+//    std::ifstream in("../../data/output.txt");
+//    std::ofstream out("out.txt");
+    revcomp::reverse_complement_fasta_stream(std::cin, std::cout);
 }
